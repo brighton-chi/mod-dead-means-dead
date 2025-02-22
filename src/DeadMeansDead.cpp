@@ -146,7 +146,7 @@ class DeadMeansDead_PlayerScript : public PlayerScript
 public:
     DeadMeansDead_PlayerScript() : PlayerScript("DeadMeansDead_PlayerScript") { }
 
-    void OnLogin(Player* player) override
+    void OnPlayerLogin(Player* player) override
     {
         if (options.enable && options.announce)
         {
