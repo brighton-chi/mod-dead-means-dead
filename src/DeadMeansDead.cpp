@@ -478,15 +478,27 @@ private:
 
     std::string _getKillerId(Unit* killer)
     {
-        // Construct the killer's ID
+        if (!killer)
+        {
+            return "<nullptr>";
+        }
+        // Defensive: check if killer is valid and in world
         std::string killerIdStr;
         if (killer->IsPlayer())
         {
-            return killer->ToPlayer()->GetName() +  " (Player)";
+            Player* player = killer->ToPlayer();
+            if (player)
+                return player->GetName() + " (Player)";
+            else
+                return "<Invalid Player>";
         }
         else if (killer->ToCreature())
         {
-            return killer->ToCreature()->GetName();
+            Creature* creature = killer->ToCreature();
+            if (creature)
+                return creature->GetName();
+            else
+                return "<Invalid Creature>";
         }
         else if (killer->GetEntry())
         {
@@ -502,13 +514,21 @@ private:
     {
         LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead:: {}", DEAD_MEANS_DEAD_SPACER);
 
-        std::string killerIdStr = _getKillerId(killer);
-
-        LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_killedByDebug: Creature {} (ID: {}, Spawn: {}) | killed by {}",
-            creature->GetName(),
+        // Defensive checks for creature
+        if (!creature)
+        {
+            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_killedByDebug: <nullptr creature> killed by {}", _getKillerId(killer));
+            return;
+        }
+        // Optionally log pointer address and state
+        LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_killedByDebug: Creature ptr={} IsAlive={} IsInWorld={} IsCorpse={} (ID: {}, Spawn: {}) | killed by {}",
+            static_cast<const void*>(creature),
+            creature->IsAlive(),
+            creature->IsInWorld(),
+            creature->IsCorpse(),
             creature->GetEntry(),
             creature->GetSpawnId(),
-            killerIdStr
+            _getKillerId(killer)
         );
     }
 };
