@@ -320,14 +320,15 @@ private:
         }
         
         // check to be sure the creature was killed by a player (if enabled)
-        if (options.filterKilledByPlayer && (!killer || !killer->ToPlayer()))
+        // pets, guardians, totems and charmed units count as a kill by their controlling player
+        if (options.filterKilledByPlayer && (!killer || !killer->GetCharmerOrOwnerPlayerOrPlayerItself()))
         {
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | was not killed by a player and the player filter is enabled. No changes.",
+            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | was not killed by a player or a player-controlled unit and the player filter is enabled. No changes.",
                 creature->GetName(),
                 creature->GetEntry(),
                 creature->GetSpawnId()
             );
-            
+
             return false;
         }
 

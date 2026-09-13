@@ -97,7 +97,8 @@ DeadMeansDead.RespawnTime.Adjusted.Max = 86400
 #
 #   DeadMeansDead.Filter.KilledByPlayer
 #
-#       Only adjust creatures that were killed by players?
+#       Only adjust creatures that were killed by players? Kills by a player's pet, guardian,
+#       totem or charmed unit count as kills by that player.
 #   
 #       Default: 1
 #
