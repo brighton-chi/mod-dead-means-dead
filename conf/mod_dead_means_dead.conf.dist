@@ -28,7 +28,7 @@ DeadMeansDead.Announce = 1
 #
 #       Adjust respawn timer in (Dungeons/Raids/World)?
 #
-#       Dungeons: 5-player instanes without a raid lockout mechanism
+#       Dungeons: 5-player instances without a raid lockout mechanism
 #       Raids: Any instance with a raid lockout
 #       World: Outside of an instance
 #
@@ -49,28 +49,36 @@ DeadMeansDead.Enable.World = 0
 #
 #       Multipliers to apply to creature's respawn timers.
 #
-#       Global will be applied to all creatures for any area type (Dungeons/Raids/World) that is enabled.
-#       .Dungeons/.Raids/.World will additionally modify the multiplier set by .Global
+#       The new respawn time is: original * Global * <area type multiplier>.
+#       Global applies to every enabled area type; .Dungeons/.Raids/.World then scale it further
+#       for that area type only.
 #
-#       Setting the value to 0.0 will disable respawn entirely for those creatures.
+#       A value of 0.0 disables respawn entirely. Because the multipliers are combined by
+#       multiplication, Global = 0.0 disables respawn in EVERY enabled area type and makes the
+#       per-type multipliers meaningless; to disable respawn only for some area types, keep
+#       Global at 1.0 and set those types to 0.0.
 #
-#       Default for all: 1.0
+#       Default:
+#           DeadMeansDead.RespawnTime.Multiplier.Global = 1.0
+#           DeadMeansDead.RespawnTime.Multiplier.Dungeons = 0.0     (never respawn)
+#           DeadMeansDead.RespawnTime.Multiplier.Raids = 0.0        (never respawn)
+#           DeadMeansDead.RespawnTime.Multiplier.World = 1.0
 #
-DeadMeansDead.RespawnTime.Multiplier.Global = 0.0
-DeadMeansDead.RespawnTime.Multiplier.Dungeons = 1.0
-DeadMeansDead.RespawnTime.Multiplier.Raids = 1.0
+DeadMeansDead.RespawnTime.Multiplier.Global = 1.0
+DeadMeansDead.RespawnTime.Multiplier.Dungeons = 0.0
+DeadMeansDead.RespawnTime.Multiplier.Raids = 0.0
 DeadMeansDead.RespawnTime.Multiplier.World = 1.0
 
 #
 #   DeadMeansDead.RespawnTime.Original.Min
 #   DeadMeansDead.RespawnTime.Original.Max
 #
-#       The minumum/maximum respawn time (in seconds) that a creature must have BEFORE modification 
+#       The minumum/maximum respawn time (in seconds) that a creature must have BEFORE modification
 #       in order to be considered for adjustment.
 #
 #       Any creature whose database-derived respawn time is outside this range will not be changed.
 #
-#       Default: 
+#       Default:
 #           DeadMeansDead.RespawnTime.Original.Min = 300            (5 minutes)
 #           DeadMeansDead.RespawnTime.Original.Max = 86400          (24 hours)
 #
@@ -82,10 +90,10 @@ DeadMeansDead.RespawnTime.Original.Max = 86400
 #   DeadMeansDead.RespawnTime.Adjusted.Max
 #
 #       The min/max respawn time (in seconds) that this module will adjust a creature's respawn time to.
+#       The computed time (original * multipliers) is clamped into this range.
 #
-#       NOTE: 
-#           If the adjusted respawn time is 0 (respawn disabled), the .Min value here will be ignored
-#           If the creature's original respawn time is greater than .Max value, no changes will be made
+#       NOTE:
+#           If the computed respawn time is 0 (respawn disabled), this range is ignored
 #
 #       Default:
 #           DeadMeansDead.RespawnTime.Adjusted.Min = 300            (5 minutes)
@@ -99,19 +107,48 @@ DeadMeansDead.RespawnTime.Adjusted.Max = 86400
 #
 #       Only adjust creatures that were killed by players? Kills by a player's pet, guardian,
 #       totem or charmed unit count as kills by that player.
-#   
+#
+#       When enabled, creatures killed by other NPCs (scripted events, NPC fights) or by the
+#       environment keep their normal respawn time.
+#
 #       Default: 1
 #
 DeadMeansDead.Filter.KilledByPlayer = 1
 
 #
+#   Filter evaluation order
+#
+#       Only creatures spawned from the `creature` table are considered; summons, pets and
+#       script-created creatures are never adjusted. The remaining checks run in this order,
+#       and the first one that decides wins:
+#
+#           1. NeverAdjust.InstanceID   -> never adjusted
+#           2. AlwaysAdjust.InstanceID  -> skips ONLY the Enable.Dungeons/Raids/World check;
+#                                          the creature checks below still apply
+#           3. Enable.Dungeons / Enable.Raids / Enable.World
+#           4. NeverAdjust.CreatureID   -> never adjusted
+#           5. AlwaysAdjust.CreatureID  -> always adjusted; skips the killer filter and the
+#                                          Original.Min/Max range
+#           6. Filter.KilledByPlayer
+#           7. RespawnTime.Original.Min / Max
+#
+#       In short: the InstanceID lists decide WHERE the module is active, the CreatureID
+#       lists decide WHAT it touches, and AlwaysAdjust.CreatureID is the only full override.
+#
+#       All lists are space-delimited, e.g. "123 456 789". Invalid entries are reported in
+#       the server log and ignored.
+#
+
+#
 #   DeadMeansDead.Filter.AlwaysAdjust.InstanceID
 #
-#       A space-delimeted list of instance IDs that should ALWAYS be adjusted.
+#       A space-delimited list of map IDs in which the module is active even if their
+#       area type is disabled (Enable.Dungeons/Raids/World).
 #
-#       This list overrides all other filters and any disabled area types.
+#       This does NOT override the creature filters: NeverAdjust.CreatureID,
+#       Filter.KilledByPlayer and RespawnTime.Original.Min/Max still apply.
 #
-#       A full list of instance IDs is available here:
+#       A full list of map IDs is available here:
 #       https://wowpedia.fandom.com/wiki/InstanceID#Classic
 #
 #       Example: "123 456 789"
@@ -123,9 +160,10 @@ DeadMeansDead.Filter.AlwaysAdjust.InstanceID = ""
 #
 #   DeadMeansDead.Filter.NeverAdjust.InstanceID
 #
-#       A space-delimeted list of instance IDs that should NEVER be adjusted.
+#       A space-delimited list of map IDs in which the module is never active.
+#       Takes precedence over every other option.
 #
-#       A full list of instance IDs is available here:
+#       A full list of map IDs is available here:
 #       https://wowpedia.fandom.com/wiki/InstanceID#Classic
 #
 #       Example: "123 456 789"
@@ -137,9 +175,11 @@ DeadMeansDead.Filter.NeverAdjust.InstanceID = ""
 #
 #   DeadMeansDead.Filter.AlwaysAdjust.CreatureID
 #
-#       A space-delimeted list of creature IDs that should ALWAYS be adjusted.
+#       A space-delimited list of creature IDs that are always adjusted, regardless of
+#       who killed them and of their original respawn time.
 #
-#       This list overrides all other filters and any disabled area types.
+#       The instance filters and area types still apply: a listed creature is not touched
+#       in a map where the module is inactive.
 #
 #       Example: "123 456 789"
 #
@@ -150,7 +190,8 @@ DeadMeansDead.Filter.AlwaysAdjust.CreatureID = ""
 #
 #   DeadMeansDead.Filter.NeverAdjust.CreatureID
 #
-#       A space-delimeted list of creature IDs that should NEVER be adjusted.
+#       A space-delimited list of creature IDs that are never adjusted.
+#       Takes precedence over AlwaysAdjust.CreatureID.
 #
 #       Example: "123 456 789"
 #

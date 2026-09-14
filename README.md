@@ -8,12 +8,12 @@ This module allows an AzerothCore server administrator to disable or customize c
 ## Defaults
 By default, the module will disable respawns in dungeons and raids - "dead" means "**DEAD**". :skull:
 
-## Notice
-The current version of this module sets the respawn time for creatures as they are killed. If the instance is unloaded from memory (`Instance.UnloadDelay` in `worldserver.conf`), the respawn time will be reset to the original value.
+## How it works
+When a creature spawned from the `creature` table dies, the module computes a new respawn time from the creature's original respawn delay and the configured multipliers, and saves it to `creature_respawn`. That row is what the core reads when the map is created, so the adjusted time survives instance unloads and server restarts. An instance reset clears it, as it clears all respawn timers.
 
-The module will still keep creatures from respawning in active instances with players in it. A workaround would be to set `Instance.UnloadDelay` to `0` in `worldserver.conf`, which will prevent instances from being unloaded until they expire.
+Only the absolute respawn time is changed; the creature's respawn delay (`creature.spawntimesecs`) is never modified, in memory or in the database.
 
-This functionality will hopefully be improved in a future release of this module.
+Summons, pets and script-created creatures are ignored. By default, kills made by other NPCs or by the environment are ignored too (`DeadMeansDead.Filter.KilledByPlayer`); kills by a player's pet, guardian, totem or charmed unit count as kills by that player.
 
 ## Configuration
 If you'd rather respawn times be longer, shorter, or applied in different map/area types, please edit the configuration file. To do this, find the `mod_dead_means_dead.conf.dist` file inside your `etc/modules/` directory. Make a copy of it called `mod_dead_means_dead.conf`. Make all configuration changes in the `.conf` file only.

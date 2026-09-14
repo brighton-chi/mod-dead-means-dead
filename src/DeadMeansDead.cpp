@@ -2,142 +2,210 @@
  * Copyright (C) 2016+ AzerothCore <www.azerothcore.org>, released under GNU AGPL v3 license: https://github.com/azerothcore/azerothcore-wotlk/blob/master/LICENSE-AGPL3
  */
 
-#include "ScriptMgr.h"
-#include "Player.h"
-#include "Config.h"
 #include "Chat.h"
+#include "Config.h"
+#include "Creature.h"
+#include "Log.h"
+#include "Map.h"
+#include "Player.h"
+#include "ScriptMgr.h"
+#include "StringConvert.h"
+#include "Tokenize.h"
+#include <algorithm>
 #include <vector>
-#include <boost/algorithm/string.hpp>
 
-// spacer used for logging
-std::string DEAD_MEANS_DEAD_SPACER = "------------------------------------------------";
-
-//
-// Module-defined Classes and Enums
-//
-class DeadMeansDead_Options : public DataMap::Base
+namespace
 {
-public:
-    DeadMeansDead_Options() {}
+    // Respawn time used when the multiplier resolves to 0 ("never respawn")
+    constexpr uint32 RESPAWN_DISABLED_SECS = 10 * YEAR;
 
-    bool enable, announce;
-    bool enableDungeons, enableRaids, enableWorld;
-
-    float multiplierGlobal, multiplierDungeon, multiplierRaid, multiplierWorld;
-
-    uint32 respawnTimeOriginalMin, respawnTimeAdjustedMin, respawnTimeAdjustedMax;
-    
-    bool filterKilledByPlayer;
-    std::vector<uint32> filterAlwaysInstanceIDs, filterNeverInstanceIDs;
-    std::vector<uint32> filterAlwaysCreatureIDs, filterNeverCreatureIDs;
-
-    void LoadOptions()
+    struct DeadMeansDeadOptions
     {
-        enable = sConfigMgr->GetOption<bool>("DeadMeansDead.Enable", true);
-        announce = sConfigMgr->GetOption<bool>("DeadMeansDead.Announce", true);
-        
-        enableDungeons = sConfigMgr->GetOption<bool>("DeadMeansDead.Enable.Dungeons", true);
-        enableRaids = sConfigMgr->GetOption<bool>("DeadMeansDead.Enable.Raids", true);
-        enableWorld = sConfigMgr->GetOption<bool>("DeadMeansDead.Enable.World", false);
+        bool enable = true;
+        bool announce = true;
 
-        multiplierGlobal = sConfigMgr->GetOption<float>("DeadMeansDead.RespawnTime.Multiplier.Global", 1.0f);
-        multiplierDungeon = sConfigMgr->GetOption<float>("DeadMeansDead.RespawnTime.Multiplier.Dungeons", 1.0f);
-        multiplierRaid = sConfigMgr->GetOption<float>("DeadMeansDead.RespawnTime.Multiplier.Raids", 1.0f);
-        multiplierWorld = sConfigMgr->GetOption<float>("DeadMeansDead.RespawnTime.Multiplier.World", 1.0f);
+        bool enableDungeons = true;
+        bool enableRaids = true;
+        bool enableWorld = false;
 
-        respawnTimeOriginalMin = sConfigMgr->GetOption<uint32>("DeadMeansDead.RespawnTime.Original.Min", 300);
-        respawnTimeAdjustedMin = sConfigMgr->GetOption<uint32>("DeadMeansDead.RespawnTime.Adjusted.Min", 300);
-        respawnTimeAdjustedMax = sConfigMgr->GetOption<uint32>("DeadMeansDead.RespawnTime.Adjusted.Max", 86400);
+        float multiplierGlobal = 1.0f;
+        float multiplierDungeon = 0.0f;
+        float multiplierRaid = 0.0f;
+        float multiplierWorld = 1.0f;
 
-        filterKilledByPlayer = sConfigMgr->GetOption<bool>("DeadMeansDead.Filter.KilledByPlayer", true);
+        uint32 respawnTimeOriginalMin = 300;
+        uint32 respawnTimeOriginalMax = 86400;
+        uint32 respawnTimeAdjustedMin = 300;
+        uint32 respawnTimeAdjustedMax = 86400;
 
-        filterAlwaysInstanceIDs =
-            _space_delim_str_to_uint32_list(sConfigMgr->GetOption<std::string>("DeadMeansDead.Filter.AlwaysAdjust.InstanceID", ""));
-        filterNeverInstanceIDs = 
-            _space_delim_str_to_uint32_list(sConfigMgr->GetOption<std::string>("DeadMeansDead.Filter.NeverAdjust.InstanceID", ""));
-        
-        filterAlwaysCreatureIDs = 
-            _space_delim_str_to_uint32_list(sConfigMgr->GetOption<std::string>("DeadMeansDead.Filter.AlwaysAdjust.CreatureID", ""));
-        filterNeverCreatureIDs = 
-            _space_delim_str_to_uint32_list(sConfigMgr->GetOption<std::string>("DeadMeansDead.Filter.NeverAdjust.CreatureID", ""));
-    }
+        bool filterKilledByPlayer = true;
+        std::vector<uint32> filterAlwaysInstanceIDs;
+        std::vector<uint32> filterNeverInstanceIDs;
+        std::vector<uint32> filterAlwaysCreatureIDs;
+        std::vector<uint32> filterNeverCreatureIDs;
 
-private:
-    std::vector<uint32> _space_delim_str_to_uint32_list(std::string str)
-    {
-        if (str.empty())
+        void Load()
         {
-            return std::vector<uint32>();
-        }
-        
-        std::vector<uint32> list;
-        std::vector<std::string> strList;
-        boost::split(strList, str, boost::is_any_of(" "));
+            enable = sConfigMgr->GetOption<bool>("DeadMeansDead.Enable", true);
+            announce = sConfigMgr->GetOption<bool>("DeadMeansDead.Announce", true);
 
-        for (std::string strValue : strList)
-        {
-            list.push_back(std::stoul(strValue));
+            enableDungeons = sConfigMgr->GetOption<bool>("DeadMeansDead.Enable.Dungeons", true);
+            enableRaids = sConfigMgr->GetOption<bool>("DeadMeansDead.Enable.Raids", true);
+            enableWorld = sConfigMgr->GetOption<bool>("DeadMeansDead.Enable.World", false);
+
+            multiplierGlobal = sConfigMgr->GetOption<float>("DeadMeansDead.RespawnTime.Multiplier.Global", 1.0f);
+            multiplierDungeon = sConfigMgr->GetOption<float>("DeadMeansDead.RespawnTime.Multiplier.Dungeons", 0.0f);
+            multiplierRaid = sConfigMgr->GetOption<float>("DeadMeansDead.RespawnTime.Multiplier.Raids", 0.0f);
+            multiplierWorld = sConfigMgr->GetOption<float>("DeadMeansDead.RespawnTime.Multiplier.World", 1.0f);
+
+            respawnTimeOriginalMin = sConfigMgr->GetOption<uint32>("DeadMeansDead.RespawnTime.Original.Min", 300);
+            respawnTimeOriginalMax = sConfigMgr->GetOption<uint32>("DeadMeansDead.RespawnTime.Original.Max", 86400);
+            respawnTimeAdjustedMin = sConfigMgr->GetOption<uint32>("DeadMeansDead.RespawnTime.Adjusted.Min", 300);
+            respawnTimeAdjustedMax = sConfigMgr->GetOption<uint32>("DeadMeansDead.RespawnTime.Adjusted.Max", 86400);
+
+            filterKilledByPlayer = sConfigMgr->GetOption<bool>("DeadMeansDead.Filter.KilledByPlayer", true);
+
+            filterAlwaysInstanceIDs = ParseIdList("DeadMeansDead.Filter.AlwaysAdjust.InstanceID");
+            filterNeverInstanceIDs = ParseIdList("DeadMeansDead.Filter.NeverAdjust.InstanceID");
+            filterAlwaysCreatureIDs = ParseIdList("DeadMeansDead.Filter.AlwaysAdjust.CreatureID");
+            filterNeverCreatureIDs = ParseIdList("DeadMeansDead.Filter.NeverAdjust.CreatureID");
         }
 
-        return list;
-    }
-};
-DeadMeansDead_Options options;
-
-class DeadMeansDead_CreatureData : public DataMap::Base
-{
-public:
-    DeadMeansDead_CreatureData() {}
-
-    bool respawnDelayAltered = false;                    // Whether or not the respawn delay has been altered at least once
-    uint32 respawnDelayOriginal = 0;                     // The original respawn delay
-};
-
-enum DeadMeansDead_MapType
-{
-    MAP_TYPE_UNKNOWN,
-    MAP_TYPE_DUNGEON,
-    MAP_TYPE_RAID,
-    MAP_TYPE_BATTLEGROUND,
-    MAP_TYPE_ARENA,
-    MAP_TYPE_WORLD
-};
-
-
-//
-// Helper Functions
-//
-bool is_uint32_in_list(uint32 value, std::vector<uint32> list)
-{
-    for (uint32 listValue : list)
-    {
-        if (value == listValue)
+    private:
+        // Space-delimited list; tokens that are not valid unsigned integers are
+        // reported and skipped
+        static std::vector<uint32> ParseIdList(std::string const& option)
         {
+            std::string const str = sConfigMgr->GetOption<std::string>(option, "");
+
+            std::vector<uint32> list;
+            for (std::string_view token : Acore::Tokenize(str, ' ', false))
+            {
+                if (Optional<uint32> value = Acore::StringTo<uint32>(token))
+                    list.push_back(*value);
+                else
+                    LOG_ERROR("module", "DeadMeansDead: option {} contains invalid value '{}', ignored", option, token);
+            }
+
+            return list;
+        }
+    };
+
+    DeadMeansDeadOptions options;
+
+    bool Contains(std::vector<uint32> const& list, uint32 value)
+    {
+        return std::find(list.begin(), list.end(), value) != list.end();
+    }
+
+    enum MapType
+    {
+        MAP_TYPE_DUNGEON,
+        MAP_TYPE_RAID,
+        MAP_TYPE_BATTLEGROUND_OR_ARENA,
+        MAP_TYPE_WORLD
+    };
+
+    MapType GetMapType(Map const* map)
+    {
+        if (map->IsRaid())
+            return MAP_TYPE_RAID;
+        if (map->IsDungeon())
+            return MAP_TYPE_DUNGEON;
+        if (map->IsBattlegroundOrArena())
+            return MAP_TYPE_BATTLEGROUND_OR_ARENA;
+        return MAP_TYPE_WORLD;
+    }
+
+    bool ShouldAdjust(Creature const* creature, Unit const* killer)
+    {
+        // Only DB spawns have a respawn timer worth persisting; summons, pets and
+        // script-created creatures are ignored
+        if (!creature->GetSpawnId())
+            return false;
+
+        Map const* map = creature->GetMap();
+        if (!map)
+            return false;
+
+        if (Contains(options.filterNeverInstanceIDs, map->GetId()))
+            return false;
+
+        if (!Contains(options.filterAlwaysInstanceIDs, map->GetId()))
+        {
+            switch (GetMapType(map))
+            {
+                case MAP_TYPE_RAID:
+                    if (!options.enableRaids)
+                        return false;
+                    break;
+                case MAP_TYPE_DUNGEON:
+                    if (!options.enableDungeons)
+                        return false;
+                    break;
+                case MAP_TYPE_WORLD:
+                    if (!options.enableWorld)
+                        return false;
+                    break;
+                default:
+                    return false;
+            }
+        }
+
+        if (Contains(options.filterNeverCreatureIDs, creature->GetEntry()))
+            return false;
+
+        if (Contains(options.filterAlwaysCreatureIDs, creature->GetEntry()))
             return true;
-        }
+
+        // Pets, guardians, totems and charmed units count as a kill by their
+        // controlling player
+        if (options.filterKilledByPlayer && (!killer || !killer->GetCharmerOrOwnerPlayerOrPlayerItself()))
+            return false;
+
+        uint32 originalDelay = creature->GetRespawnDelay();
+        if (originalDelay < options.respawnTimeOriginalMin || originalDelay > options.respawnTimeOriginalMax)
+            return false;
+
+        return true;
     }
 
-    return false;
+    uint32 ComputeRespawnTime(Creature const* creature)
+    {
+        float multiplier = 1.0f;
+        switch (GetMapType(creature->GetMap()))
+        {
+            case MAP_TYPE_RAID:
+                multiplier = options.multiplierRaid;
+                break;
+            case MAP_TYPE_DUNGEON:
+                multiplier = options.multiplierDungeon;
+                break;
+            case MAP_TYPE_WORLD:
+                multiplier = options.multiplierWorld;
+                break;
+            default:
+                break;
+        }
+
+        uint32 respawnTime = uint32(float(creature->GetRespawnDelay()) * options.multiplierGlobal * multiplier);
+
+        // 0 means "never respawn" and bypasses the adjusted min/max clamp
+        if (respawnTime == 0)
+            return RESPAWN_DISABLED_SECS;
+
+        return std::clamp(respawnTime, options.respawnTimeAdjustedMin, options.respawnTimeAdjustedMax);
+    }
 }
 
-
-//
-// Script Hook classes
-//
 class DeadMeansDead_WorldScript : public WorldScript
 {
 public:
     DeadMeansDead_WorldScript() : WorldScript("DeadMeansDead_WorldScript") { }
 
-    void OnBeforeConfigLoad(bool reload) override
+    void OnBeforeConfigLoad(bool /*reload*/) override
     {
-        if (reload)
-        {
-            options = DeadMeansDead_Options();
-        }
-        
-        // load options
-        options.LoadOptions();
+        options.Load();
     }
 };
 
@@ -149,9 +217,7 @@ public:
     void OnPlayerLogin(Player* player) override
     {
         if (options.enable && options.announce)
-        {
             ChatHandler(player->GetSession()).PSendSysMessage("DeadMeansDead is enabled.");
-        }
     }
 };
 
@@ -162,375 +228,21 @@ public:
 
     void OnUnitDeath(Unit* unit, Unit* killer) override
     {
-        // make sure we're enabled
         if (!options.enable)
-        {
             return;
-        }
-
-        // only adjust the creature if it passes checks
-        if (_shouldUnitBeAdjusted(unit, killer))
-        {
-            Creature* creature = unit->ToCreature();
-
-            _adjustCreature(creature);
-        }
-
-        return;
-        
-    }
-private:
-    DeadMeansDead_MapType getMapType(Map* map)
-    {
-        if (!map)
-        {
-            return MAP_TYPE_UNKNOWN;
-        }
-        else if (map->IsDungeon() && !map->IsRaid())
-        {
-            return MAP_TYPE_DUNGEON;
-        }
-        else if (map->IsRaid())
-        {
-            return MAP_TYPE_RAID;
-        }
-        else if (map->IsBattleground())
-        {
-            return MAP_TYPE_BATTLEGROUND;
-        }
-        else if (map->IsBattleArena())
-        {
-            return MAP_TYPE_ARENA;
-        }
-        else
-        {
-            return MAP_TYPE_WORLD;
-        }
-    }
-
-    bool _shouldUnitBeAdjusted(Unit* unit, Unit* killer)
-    {
-        // check to be sure this is a creature
-        if (!unit || !unit->ToCreature())
-        {
-            return false;
-        }
 
         Creature* creature = unit->ToCreature();
-        
-        // check to be sure the creature is in a map
-        if (!creature->GetMap())
-        {
-            return false;
-        }
-
-        Map* map = creature->GetMap();
-        DeadMeansDead_MapType mapType = getMapType(map);
-        std::string mapTypeString = 
-            mapType == MAP_TYPE_DUNGEON ? "Dungeon" : 
-            mapType == MAP_TYPE_RAID ? "Raid" : 
-            mapType == MAP_TYPE_BATTLEGROUND ? "Battleground" : 
-            mapType == MAP_TYPE_ARENA ? "Arena" : 
-            mapType == MAP_TYPE_WORLD ? "World" : 
-            "Unknown";
-
-        // never adjust if the creature's map is in the filterNeverInstanceIDs list
-        if(is_uint32_in_list(map->GetId(), options.filterNeverInstanceIDs))
-        {
-            _killedByDebug(creature, killer);
-
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | is in map {} ({}), which is in the NEVER instance list. No changes.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId(),
-                map->GetMapName(),
-                map->GetId()
-            );
-
-            return false;
-        }
-        // always adjust if the creature's map is in the filterAlwaysInstanceIDs list
-        else if(is_uint32_in_list(map->GetId(), options.filterAlwaysInstanceIDs))
-        {
-            _killedByDebug(creature, killer);
-            
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | is in map {} ({}), which is in the ALWAYS instance list. ENABLED for adjustments.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId(),
-                map->GetMapName(),
-                map->GetId()
-            );
-            // continue to creature checks
-        }
-        // check to be sure the creature is in one of the area types we want to adjust
-        else if 
-        (
-            (mapType == MAP_TYPE_RAID && options.enableRaids) ||
-            (mapType == MAP_TYPE_DUNGEON && options.enableDungeons) ||
-            (mapType == MAP_TYPE_WORLD && options.enableWorld)
-        )
-        {
-            _killedByDebug(creature, killer);
-            
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | is in an area ({}) of type ({}), which is ENABLED for adjustments.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId(),
-                map->GetMapName(),
-                mapTypeString
-            );
-        }
-        else
-        {
-            // LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::OnUnitDeath: Creature {} (ID: {}, Spawn: {}) | is in an area ({}) of type ({}), which is DISABLED for adjustments. No changes.",
-            //     creature->GetName(),
-            //     creature->GetEntry(),
-            //     creature->GetSpawnId(),
-            //     map->GetMapName(),
-            //     mapTypeString
-            // );
-
-            return false;
-        }
-
-        // never adjust if the creature's ID is in the filterNeverCreatureIDs list
-        if (is_uint32_in_list(creature->GetEntry(), options.filterNeverCreatureIDs))
-        {
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | is in the NEVER creature list. No changes.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId()
-            );
-
-            // the rest of the checks don't matter, don't adjust
-            return false;
-        }
-        // always adjust if the creature's ID is in the filterAlwaysCreatureIDs list
-        else if (is_uint32_in_list(creature->GetEntry(), options.filterAlwaysCreatureIDs))
-        {
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | is in the ALWAYS creature list. ENABLED for adjustments.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId()
-            );
-
-            // the rest of the checks don't matter, force adjust
-            return true;
-        }
-        
-        // check to be sure the creature was killed by a player (if enabled)
-        // pets, guardians, totems and charmed units count as a kill by their controlling player
-        if (options.filterKilledByPlayer && (!killer || !killer->GetCharmerOrOwnerPlayerOrPlayerItself()))
-        {
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | was not killed by a player or a player-controlled unit and the player filter is enabled. No changes.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId()
-            );
-
-            return false;
-        }
-
-        // check to be sure the creature's original respawn time is greater than the minimum
-        if (creature->GetRespawnDelay() < options.respawnTimeOriginalMin)
-        {
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | has an original respawn time ({}) less than the minimum ({}). No changes.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId(),
-                creature->GetRespawnTime(),
-                options.respawnTimeOriginalMin
-            );
-
-            return false;
-        }
-        // check to be sure the creature's original respawn time is less than the maximum
-        else if (creature->GetRespawnDelay() > options.respawnTimeAdjustedMax)
-        {
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | has an original respawn time ({}) greater than the maximum ({}). No changes.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId(),
-                creature->GetRespawnTime(),
-                options.respawnTimeAdjustedMax
-            );
-
-            return false;
-        }
-
-        // survived to here, so we should adjust the creature
-        LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_shouldUnitBeAdjusted: Creature {} (ID: {}, Spawn: {}) | will be adjusted.",
-            creature->GetName(),
-            creature->GetEntry(),
-            creature->GetSpawnId()
-        );
-        return true;
-    }
-
-    void _adjustCreature(Creature* creature)
-    {
-        Map* map = creature->GetMap();
-        DeadMeansDead_MapType mapType = getMapType(map);
-        std::string mapTypeString = 
-            mapType == MAP_TYPE_DUNGEON ? "Dungeon" : 
-            mapType == MAP_TYPE_RAID ? "Raid" : 
-            mapType == MAP_TYPE_BATTLEGROUND ? "Battleground" : 
-            mapType == MAP_TYPE_ARENA ? "Arena" : 
-            mapType == MAP_TYPE_WORLD ? "World" : 
-            "Unknown";
-
-        // determine the original respawn time for this creature
-        DeadMeansDead_CreatureData *creatureData = creature->CustomData.GetDefault<DeadMeansDead_CreatureData>("DeadMeansDead_CreatureData");
-        uint32 originalRespawnDelay = 0;
-
-        if (creatureData->respawnDelayAltered)
-        {
-            originalRespawnDelay = creatureData->respawnDelayOriginal;
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_adjustCreature: Creature {} (ID: {}, Spawn: {}) | respawn time already altered. Using original ({}).",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId(),
-                creatureData->respawnDelayOriginal
-            );
-        }
-        else
-        {
-            creatureData->respawnDelayOriginal = creature->GetRespawnDelay();
-            originalRespawnDelay = creature->GetRespawnDelay();
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_adjustCreature: Creature {} (ID: {}, Spawn: {}) | respawn time not altered. Using current ({}) and saving to creature.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId(),
-                originalRespawnDelay
-            );
-        }
-        
-        // calculate the new respawn time
-        uint32 newRespawnTime;
-        float multiplier = 
-            mapType == MAP_TYPE_DUNGEON ? options.multiplierDungeon :
-            mapType == MAP_TYPE_RAID ? options.multiplierRaid :
-            mapType == MAP_TYPE_WORLD ? options.multiplierWorld :
-            1.0f;
-
-        newRespawnTime = (uint32)((float)originalRespawnDelay * options.multiplierGlobal * multiplier);
-        
-        LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_adjustCreature: Creature {} (ID: {}, Spawn: {}) | newRespawnTime ({}) = originalRespawnDelay ({}) * multiplierGlobal ({}) * {} ({})",
-            creature->GetName(),
-            creature->GetEntry(),
-            creature->GetSpawnId(),
-            newRespawnTime,
-            originalRespawnDelay,
-            options.multiplierGlobal,
-            mapTypeString,
-            multiplier
-        );
-
-        // if the newRespawnTime is 0, disable respawning for this creature
-        if (newRespawnTime == 0)
-        {
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_adjustCreature: Creature {} (ID: {}, Spawn: {}) | newRespawnTime ({}) is 0. Disabling respawn.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId(),
-                newRespawnTime
-            );
-
-            newRespawnTime = 315360000; // 10 years
-        }
-        // check to be sure the new respawn time is greater than the minimum
-        else if (newRespawnTime < options.respawnTimeAdjustedMin)
-        {
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_adjustCreature: Creature {} (ID: {}, Spawn: {}) | newRespawnTime ({}) is less than the minimum ({}). Adjusting to minimum.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId(),
-                newRespawnTime,
-                options.respawnTimeAdjustedMin
-            );
-        }
-        // check to be sure the new respawn time is less than the maximum
-        else if (newRespawnTime > options.respawnTimeAdjustedMax)
-        {
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_adjustCreature: Creature {} (ID: {}, Spawn: {}) | newRespawnTime ({}) is greater than the maximum ({}). Adjusting to maximum.",
-                creature->GetName(),
-                creature->GetEntry(),
-                creature->GetSpawnId(),
-                newRespawnTime,
-                options.respawnTimeAdjustedMax
-            );
-        }
-
-        // actually adjust the respawn time
-        LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_adjustCreature: Creature {} (ID: {}, Spawn: {}) | respawn time adjusted from ({}) to ({}).",
-            creature->GetName(),
-            creature->GetEntry(),
-            creature->GetSpawnId(),
-            originalRespawnDelay,
-            newRespawnTime
-        );
-
-        creatureData->respawnDelayAltered = true;
-        creature->SetRespawnDelay(newRespawnTime);
-        creature->SetRespawnTime(newRespawnTime);
-        creature->SaveRespawnTime();
-    }
-
-    std::string _getKillerId(Unit* killer)
-    {
-        if (!killer)
-        {
-            return "<nullptr>";
-        }
-        // Defensive: check if killer is valid and in world
-        std::string killerIdStr;
-        if (killer->IsPlayer())
-        {
-            Player* player = killer->ToPlayer();
-            if (player)
-                return player->GetName() + " (Player)";
-            else
-                return "<Invalid Player>";
-        }
-        else if (killer->ToCreature())
-        {
-            Creature* creature = killer->ToCreature();
-            if (creature)
-                return creature->GetName();
-            else
-                return "<Invalid Creature>";
-        }
-        else if (killer->GetEntry())
-        {
-            return std::to_string(killer->GetEntry());
-        }
-        else
-        {
-            return "Unknown ID";
-        }
-    }
-
-    void _killedByDebug(Creature* creature, Unit* killer)
-    {
-        LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead:: {}", DEAD_MEANS_DEAD_SPACER);
-
-        // Defensive checks for creature
-        if (!creature)
-        {
-            LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_killedByDebug: <nullptr creature> killed by {}", _getKillerId(killer));
+        if (!creature || !ShouldAdjust(creature, killer))
             return;
-        }
-        // Optionally log pointer address and state
-        LOG_DEBUG("module.DeadMeansDead", "DeadMeansDead_UnitScript::_killedByDebug: Creature ptr={} IsAlive={} IsInWorld={} IsCorpse={} (ID: {}, Spawn: {}) | killed by {}",
-            static_cast<const void*>(creature),
-            creature->IsAlive(),
-            creature->IsInWorld(),
-            creature->IsCorpse(),
-            creature->GetEntry(),
-            creature->GetSpawnId(),
-            _getKillerId(killer)
-        );
+
+        // Only the absolute respawn time is changed. The creature's respawn delay is
+        // deliberately left untouched: it is what Creature::SaveToDB() writes back to
+        // creature.spawntimesecs, so altering it would let any GM command that saves
+        // the creature persist the adjusted value into the world database. Natural
+        // corpse decay (RemoveCorpse(false)) keeps the time set here, and
+        // SaveRespawnTime() persists it across map unloads and server restarts.
+        creature->SetRespawnTime(ComputeRespawnTime(creature));
+        creature->SaveRespawnTime();
     }
 };
 
